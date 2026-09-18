@@ -22,9 +22,19 @@ enum Log {
         mirror(message)
     }
 
+    /// Per-decision detail.
+    ///
+    /// Debug-level entries live only in the in-memory ring buffer: `log stream` shows
+    /// them, `log show` does not, so anything logged at debug is invisible after the
+    /// fact. When verbose logging has been deliberately turned on, log at notice level
+    /// instead so the decisions can actually be read back.
     static func debug(_ logger: Logger, _ message: String) {
-        logger.debug("\(message, privacy: .public)")
-        if verbose { mirror(message) }
+        if verbose {
+            logger.notice("\(message, privacy: .public)")
+            mirror(message)
+        } else {
+            logger.debug("\(message, privacy: .public)")
+        }
     }
 
     static func error(_ logger: Logger, _ message: String) {
