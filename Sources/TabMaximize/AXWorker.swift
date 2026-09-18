@@ -63,6 +63,28 @@ final class AXWorker: @unchecked Sendable {
         }
     }
 
+    /// Used by `--restore-ax` to isolate which step of the restore sequence has which
+    /// effect. Acts on the front-most minimized window only.
+    func restoreFirstMinimized(pid: pid_t, raise: Bool, setMain: Bool, completion: @escaping @Sendable (String) -> Void) {
+        queue.async {
+            let app = AXUIElementCreateApplication(pid)
+            AX.setTimeout(app, 2.0)
+            guard let windows = try? AX.copyValue(app, kAXWindowsAttribute as String, as: [AXUIElement].self).get() else {
+                completion("could not read windows")
+                return
+            }
+            let snapshots = windows.enumerated().map { Self.snapshot(index: $0.offset, window: $0.element) }
+            guard let target = snapshots.first(where: { $0.isRestoreCandidate })?.index else {
+                completion("nothing minimized")
+                return
+            }
+            AX.setValue(windows[target], kAXMinimizedAttribute as String, kCFBooleanFalse)
+            if raise { AX.perform(windows[target], kAXRaiseAction as String) }
+            if setMain { AX.setValue(windows[target], kAXMainAttribute as String, kCFBooleanTrue) }
+            completion("acted on [\(target)] \(snapshots[target].title ?? "(untitled)") (raise: \(raise), setMain: \(setMain))")
+        }
+    }
+
     /// Used by `--dump-ax`. Returns whatever the app reports, unfiltered.
     func dump(pid: pid_t, completion: @escaping @Sendable ([WindowSnapshot], AXError?) -> Void) {
         queue.async {
@@ -80,6 +102,17 @@ final class AXWorker: @unchecked Sendable {
     // MARK: - The ladder
 
     private func attempt(pid: pid_t, step: Int, restoreAll: Bool, dryRun: Bool, completion: @escaping @Sendable (Outcome) -> Void) {
+        // The window server answers without touching the target process, so this costs
+        // far less than an AX round trip and settles the common case: the app already
+        // has something on screen, and Cmd+Tab did the right thing by itself.
+        if step == 0 {
+            let onscreen = CGWindows.summary(pid: pid).onscreen
+            if onscreen > 0 {
+                completion(.skipped("\(onscreen) window(s) already on screen"))
+                return
+            }
+        }
+
         let app = AXUIElementCreateApplication(pid)
         AX.setTimeout(app, Self.messagingTimeout)
 
@@ -103,29 +136,32 @@ final class AXWorker: @unchecked Sendable {
             clearTimeouts(pid: pid)
 
             if windows.isEmpty {
-                // Tell "still warming up" apart from "really has no windows".
-                let cg = CGWindows.summary(pid: pid)
-                if cg.total == 0 {
-                    completion(.skipped("app has no windows"))
-                    return
-                }
-                Log.debug(Log.ax, "pid \(pid): AX window list empty but window server reports \(cg.total) (onscreen \(cg.onscreen)) — retrying")
+                // Either the list has not caught up with the activation yet, or the app
+                // genuinely has no windows. Only time tells them apart, so ride out the
+                // ladder and treat persistent emptiness as the ordinary, harmless case
+                // it usually is — an app whose windows the user closed.
                 retry(pid: pid, step: step, restoreAll: restoreAll, dryRun: dryRun,
-                      giveUpReason: "AX never reported the \(cg.total) window(s) the window server sees", completion: completion)
+                      giveUpReason: nil, completion: completion)
                 return
             }
 
             let snapshots = windows.enumerated().map { Self.snapshot(index: $0.offset, window: $0.element) }
-            let standardIndexes = snapshots.indices.filter { snapshots[$0].isStandard }
+            let windowIndexes = snapshots.indices.filter { snapshots[$0].isWindow }
 
-            guard !standardIndexes.isEmpty else {
-                completion(.skipped("no standard windows (\(snapshots.map(\.label).joined(separator: " ")))"))
+            guard !windowIndexes.isEmpty else {
+                completion(.skipped("no windows among \(snapshots.count) AX element(s): \(snapshots.map(\.label).joined(separator: " "))"))
                 return
             }
 
-            let minimized = standardIndexes.filter { snapshots[$0].isMinimized }
-            guard minimized.count == standardIndexes.count else {
-                completion(.skipped("\(standardIndexes.count - minimized.count) window(s) already visible"))
+            let visible = windowIndexes.filter { snapshots[$0].isVisibleWindow }
+            guard visible.isEmpty else {
+                completion(.skipped("\(visible.count) window(s) already visible"))
+                return
+            }
+
+            let minimized = windowIndexes.filter { snapshots[$0].isRestoreCandidate }
+            guard !minimized.isEmpty else {
+                completion(.skipped("nothing minimized to restore"))
                 return
             }
 
@@ -151,11 +187,13 @@ final class AXWorker: @unchecked Sendable {
         }
     }
 
+    /// `giveUpReason` nil means running out of attempts is not a failure — it is an app
+    /// with no windows, which is a perfectly normal thing to Cmd+Tab to.
     private func retry(pid: pid_t, step: Int, restoreAll: Bool, dryRun: Bool,
-                       giveUpReason: String, completion: @escaping @Sendable (Outcome) -> Void) {
+                       giveUpReason: String?, completion: @escaping @Sendable (Outcome) -> Void) {
         let next = step + 1
         guard next < Self.ladder.count else {
-            completion(.failed(giveUpReason))
+            completion(giveUpReason.map { Outcome.failed($0) } ?? .skipped("app has no windows"))
             return
         }
         let delay = Self.ladder[next] - Self.ladder[step]

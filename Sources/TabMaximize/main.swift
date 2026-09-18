@@ -16,6 +16,13 @@ if arguments.contains("--help") || arguments.contains("-h") {
 
 Log.mirrorToStderr = arguments.contains("--verbose") || arguments.contains("--dump-ax")
 
+if let index = arguments.firstIndex(of: "--restore-ax") {
+    let target = arguments.count > index + 1 ? arguments[index + 1] : nil
+    Diagnostics.runRestoreAX(target: target,
+                             raise: arguments.contains("raise"),
+                             setMain: arguments.contains("main"))
+}
+
 if let index = arguments.firstIndex(of: "--dump-ax") {
     let target = arguments.count > index + 1 ? arguments[index + 1] : nil
     Diagnostics.runDumpAX(target: target)

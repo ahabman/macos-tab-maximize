@@ -81,6 +81,12 @@ forever. Verify with:
 codesign -d -r- /Applications/TabMaximize.app   # want 'certificate leaf', not 'cdhash'
 ```
 
+The first build after creating the certificate may show a **"codesign wants to use a
+key in your keychain"** dialog — click **Always Allow** and it will not ask again.
+`make cert` tries to prevent it outright by setting the key's partition list, which
+needs your login keychain password; neither `-T` nor `-A` at import time is sufficient
+on its own.
+
 The certificate is *not* added to the trust store; `codesign` does not need that, and
 skipping it avoids an authorization dialog. `security find-identity -v -p codesigning`
 will not list it as a result — that is expected.
@@ -98,6 +104,32 @@ make dump TARGET=TextEdit         # what AX reports for an app's windows
 `--dump-ax` is the diagnostic that matters: it shows whether a minimized window still
 appears in `kAXWindows` with `AXMinimized = true`. Standard AppKit apps do; some
 Electron/Qt apps have historically not. If an app is never restored, dump it first.
+
+## What testing turned up
+
+Findings from verifying this on macOS 26, all of which shaped the code:
+
+- **A minimized window lies about its subrole.** The same TextEdit document window
+  reports `AXStandardWindow` while visible and **`AXDialog`** once minimized (Finder
+  behaves identically). Filtering candidates by subrole — the obvious implementation —
+  rejects exactly the windows this app exists to restore. Minimized windows are
+  therefore classified by role alone.
+- **`kAXWindows` contains things that are not windows.** Finder reports its desktop as
+  an `AXScrollArea` in the same list. Counting it as a visible window would have meant
+  Finder's minimized windows never came back.
+- **The window server's window count is not a window count.** AppKit keeps offscreen
+  backing windows for menu bars and toolbars at layer 0; a TextEdit with no documents
+  open at all reported nine of them. Only the *onscreen* count is meaningful, and that
+  is all this app uses it for.
+- **Restoring one window can bring back its siblings.** Deminiaturizing a single window
+  of an app that has several minimized was observed to restore all of them. The cause
+  has not been isolated yet (`--restore-ax <app> [raise] [main]` exists to bisect the
+  three steps). "Restore All Minimized Windows" therefore does not yet reliably differ
+  from the default for every app.
+- **A shell-launched binary has no Accessibility access.** TCC attributes it to the
+  terminal, not to this bundle, so `Contents/MacOS/TabMaximize --dump-ax` fails unless
+  the terminal itself holds the grant. `make dump` launches the bundle through
+  LaunchServices instead and reads results back out of the unified log.
 
 ## Requirements
 

@@ -8,18 +8,27 @@ import Foundation
 /// appear in kAXWindows, with AXMinimized true?
 ///
 /// With no argument, every regular running app is dumped.
+///
+/// Output goes to stdout *and* the unified log. That is not redundant: TCC attributes a
+/// binary launched from a shell to the terminal, not to this bundle, so running the
+/// executable directly only has Accessibility access if the terminal itself was granted
+/// it. Launching through LaunchServices — `make dump`, which uses `open --args` — runs
+/// as the app, where the grant applies, and the unified log is the only way to see what
+/// it found.
 enum Diagnostics {
     static func runDumpAX(target: String?) -> Never {
         guard AXIsProcessTrusted() else {
             let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
             _ = AXIsProcessTrustedWithOptions(options)
-            FileHandle.standardError.write("Accessibility permission is required. Grant it in System Settings › Privacy & Security › Accessibility, then re-run.\n".data(using: .utf8)!)
+            let message = "Accessibility permission is required. Note that running this binary straight from a shell is attributed to the terminal, not to TabMaximize — use 'make dump TARGET=...' instead, which launches the app bundle."
+            emit(message)
+            FileHandle.standardError.write("\(message)\n".data(using: .utf8)!)
             exit(1)
         }
 
         let apps = resolve(target: target)
         guard !apps.isEmpty else {
-            FileHandle.standardError.write("No running application matched \(target ?? "(all)").\n".data(using: .utf8)!)
+            emit("No running application matched \(target ?? "(all)").")
             exit(1)
         }
 
@@ -37,20 +46,46 @@ enum Diagnostics {
             _ = semaphore.wait(timeout: .now() + 5)
 
             let (snapshots, error) = result
-            print("\(name) — pid \(pid), bundle \(app.bundleIdentifier ?? "?")")
-            print("  window server: \(cg.total) window(s), \(cg.onscreen) onscreen")
+            emit("\(name) — pid \(pid), bundle \(app.bundleIdentifier ?? "?")")
+            emit("  window server: \(cg.total) window(s), \(cg.onscreen) onscreen")
             if let error {
-                print("  AX error: \(error.name)")
+                emit("  AX error: \(error.name)")
             } else if snapshots.isEmpty {
-                print("  AX: no windows reported")
+                emit("  AX: no windows reported")
             } else {
                 for snapshot in snapshots {
-                    print("  [\(snapshot.index)] minimized=\(snapshot.isMinimized) role=\(snapshot.role ?? "?") subrole=\(snapshot.subrole ?? "(none)") standard=\(snapshot.isStandard) title=\(snapshot.title ?? "(untitled)")")
+                    emit("  [\(snapshot.index)] minimized=\(snapshot.isMinimized) role=\(snapshot.role ?? "?") subrole=\(snapshot.subrole ?? "(none)") window=\(snapshot.isWindow) candidate=\(snapshot.isRestoreCandidate) blocks=\(snapshot.isVisibleWindow) title=\(snapshot.title ?? "(untitled)")")
                 }
             }
-            print("")
         }
         exit(0)
+    }
+
+    /// `--restore-ax <target> [raise] [main]` — performs just the chosen steps of the
+    /// restore sequence on one window, to see what each one actually does.
+    static func runRestoreAX(target: String?, raise: Bool, setMain: Bool) -> Never {
+        guard AXIsProcessTrusted() else {
+            emit("Accessibility permission is required (launch via 'make' targets, not directly from a shell).")
+            exit(1)
+        }
+        guard let app = resolve(target: target).first else {
+            emit("No running application matched \(target ?? "(none)").")
+            exit(1)
+        }
+        let semaphore = DispatchSemaphore(value: 0)
+        nonisolated(unsafe) var report = ""
+        AXWorker.shared.restoreFirstMinimized(pid: app.processIdentifier, raise: raise, setMain: setMain) {
+            report = $0
+            semaphore.signal()
+        }
+        _ = semaphore.wait(timeout: .now() + 5)
+        emit("\(app.localizedName ?? "?"): \(report)")
+        exit(0)
+    }
+
+    private static func emit(_ line: String) {
+        print(line)
+        Log.ax.notice("dump: \(line, privacy: .public)")
     }
 
     private static func resolve(target: String?) -> [NSRunningApplication] {

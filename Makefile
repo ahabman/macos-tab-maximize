@@ -54,8 +54,12 @@ debug: sign
 run: install
 
 # make dump TARGET=TextEdit
-dump: sign
-	$(BUILD)/Contents/MacOS/$(APP) --dump-ax $(TARGET)
+# Launched through LaunchServices so TCC attributes it to this bundle rather than to
+# the terminal; results come back out of the unified log.
+dump:
+	@open -n -a $(DEST) --args --dump-ax $(TARGET)
+	@sleep 2
+	@log show --last 30s --predicate 'subsystem == "$(BUNDLE_ID)" and category == "ax"' --info --style compact | sed -n 's/.*dump: //p'
 
 logs:
 	log stream --predicate 'subsystem == "$(BUNDLE_ID)"' --level debug --style compact
