@@ -40,7 +40,10 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
         menu.addItem(toggle("Enabled", #selector(toggleEnabled), on: Prefs.enabled))
         menu.addItem(toggle("Only After Cmd+Tab", #selector(toggleRequireCmdTab), on: Prefs.requireCmdTab))
-        menu.addItem(toggle("Restore All Minimized Windows", #selector(toggleRestoreAll), on: Prefs.restoreAllWindows))
+        let restoreAll = toggle("Restore All Minimized Windows", #selector(toggleRestoreAll), on: Prefs.restoreAllWindows)
+        restoreAll.toolTip = "macOS restores an app's minimized windows as a group, so for most apps "
+            + "they all come back either way. This only changes how many windows TabMaximize itself acts on."
+        menu.addItem(restoreAll)
         menu.addItem(.separator())
 
         menu.addItem(toggle("Launch at Login", #selector(toggleLoginItem), on: LoginItem.isEnabled))

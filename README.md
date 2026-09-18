@@ -128,11 +128,18 @@ Findings from verifying this on macOS 26, all of which shaped the code:
   backing windows for menu bars and toolbars at layer 0; a TextEdit with no documents
   open at all reported nine of them. Only the *onscreen* count is meaningful, and that
   is all this app uses it for.
-- **Restoring one window can bring back its siblings.** Deminiaturizing a single window
-  of an app that has several minimized was observed to restore all of them. The cause
-  has not been isolated yet (`--restore-ax <app> [raise] [main]` exists to bisect the
-  three steps). "Restore All Minimized Windows" therefore does not yet reliably differ
-  from the default for every app.
+- **macOS restores an app's minimized windows as a group, and there is no way around
+  it.** Deminiaturizing one window of an app with several minimized brings back all of
+  them. This was bisected rather than assumed: it happens with a bare `AXMinimized`
+  write and no raise and no main (`--restore-ax`), and equally when pressing a single
+  window's own Dock tile (`--dock-press`), which is the exact gesture a person uses to
+  restore one window. Putting the siblings back down afterwards was also tried and does
+  not work — the re-minimize is overridden by the restore animation still in flight, and
+  forcing it would mean windows visibly popping up and sinking again.
+
+  So "Restore All Minimized Windows" only controls how many windows TabMaximize writes
+  to; how many actually appear is the system's call. In practice this matches what
+  Option+Cmd+Tab does anyway.
 - **A shell-launched binary has no Accessibility access.** TCC attributes it to the
   terminal, not to this bundle, so `Contents/MacOS/TabMaximize --dump-ax` fails unless
   the terminal itself holds the grant. `make dump` launches the bundle through

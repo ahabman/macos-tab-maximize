@@ -85,6 +85,20 @@ final class AXWorker: @unchecked Sendable {
         }
     }
 
+    /// Used by `--dock-list` to inspect what the Dock exposes.
+    func dockItems(completion: @escaping @Sendable ([String]) -> Void) {
+        queue.async {
+            completion(DockFallback.minimizedItems().map(\.title))
+        }
+    }
+
+    /// Used by `--dock-press` to check whether a Dock tile restores just one window.
+    func pressDockItem(title: String, completion: @escaping @Sendable (Bool) -> Void) {
+        queue.async {
+            completion(DockFallback.press(title: title))
+        }
+    }
+
     /// Used by `--dump-ax`. Returns whatever the app reports, unfiltered.
     func dump(pid: pid_t, completion: @escaping @Sendable ([WindowSnapshot], AXError?) -> Void) {
         queue.async {
@@ -180,6 +194,15 @@ final class AXWorker: @unchecked Sendable {
                     restored.append(snapshots[index].title ?? "(untitled)")
                 }
             }
+
+            // Note: macOS restores an app's minimized windows as a group. Writing
+            // AXMinimized on one window brings back all of them, and so does pressing a
+            // single window's Dock tile — verified on macOS 26 with TextEdit and
+            // Finder. Putting the siblings back down was tried and does not work: the
+            // re-minimize is overridden by the restore animation still in flight, and
+            // making it stick would mean windows visibly popping up and sinking again.
+            // So `restoreAll` controls only how many windows this app writes to; the
+            // number that actually appears is the operating system's decision.
 
             completion(restored.isEmpty
                        ? .failed("AXMinimized stayed true for \(titles.joined(separator: ", "))")

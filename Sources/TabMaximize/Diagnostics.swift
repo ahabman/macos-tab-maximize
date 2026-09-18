@@ -83,6 +83,28 @@ enum Diagnostics {
         exit(0)
     }
 
+    /// `--dock-list` / `--dock-press <title>` — inspect and exercise the Dock's tiles
+    /// for minimized windows.
+    static func runDock(pressTitle: String?) -> Never {
+        guard AXIsProcessTrusted() else {
+            emit("Accessibility permission is required.")
+            exit(1)
+        }
+        let semaphore = DispatchSemaphore(value: 0)
+        if let pressTitle {
+            nonisolated(unsafe) var ok = false
+            AXWorker.shared.pressDockItem(title: pressTitle) { ok = $0; semaphore.signal() }
+            _ = semaphore.wait(timeout: .now() + 5)
+            emit("dock press \(pressTitle): \(ok ? "sent" : "no matching tile")")
+        } else {
+            nonisolated(unsafe) var titles: [String] = []
+            AXWorker.shared.dockItems { titles = $0; semaphore.signal() }
+            _ = semaphore.wait(timeout: .now() + 5)
+            emit("minimized window tiles: \(titles.isEmpty ? "(none)" : titles.joined(separator: " | "))")
+        }
+        exit(0)
+    }
+
     private static func emit(_ line: String) {
         print(line)
         Log.ax.notice("dump: \(line, privacy: .public)")

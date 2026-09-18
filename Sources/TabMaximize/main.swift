@@ -16,6 +16,14 @@ if arguments.contains("--help") || arguments.contains("-h") {
 
 Log.mirrorToStderr = arguments.contains("--verbose") || arguments.contains("--dump-ax")
 
+if arguments.contains("--dock-list") {
+    Diagnostics.runDock(pressTitle: nil)
+}
+
+if let index = arguments.firstIndex(of: "--dock-press") {
+    Diagnostics.runDock(pressTitle: arguments.count > index + 1 ? arguments[index + 1] : "")
+}
+
 if let index = arguments.firstIndex(of: "--restore-ax") {
     let target = arguments.count > index + 1 ? arguments[index + 1] : nil
     Diagnostics.runRestoreAX(target: target,
