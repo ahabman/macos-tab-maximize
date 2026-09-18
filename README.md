@@ -54,12 +54,19 @@ Cmd+Tab is a system symbolic hotkey: WindowServer hands it to the Dock, and the 
 holds a keyboard grab, so `NSEvent.addGlobalMonitorForEvents` never sees it. Two
 mechanisms are available, and the cheap one is tried first:
 
-- **Modifier check (default, free).** The activation handler reads
-  `NSEvent.modifierFlags` synchronously. If Command is still held, it was a Cmd+Tab.
-  This catches every switch where you have not yet let go of Command.
+- **Input recency (default, free).** Asking whether Command is held does not work, and
+  measurement is how that was settled: the switcher commits when you *release* Command,
+  so by the time the activation notification arrives the modifier is always already up.
+  What survives is timing. `CGEventSource` reports how long ago the keyboard and the
+  mouse were last used, without any TCC grant, because it exposes input *recency*, not
+  input *content*. A real Cmd+Tab measured 0.27 s since the last keystroke against
+  35.65 s since the last click; clicking back to another app measured 0.01 s since the
+  click. So the rule is simply: the keyboard was used more recently than the mouse, and
+  within the last two seconds.
 - **Event tap (optional).** A listen-only tap at the head of the session tap, which runs
-  before symbolic hotkey dispatch. Catches the keystroke regardless of timing, but costs
-  a second TCC grant — Input Monitoring. Turn it on only if switches are being missed.
+  before symbolic hotkey dispatch. Observes the keystroke directly regardless of timing,
+  but costs a second TCC grant — Input Monitoring. Only needed if the timing heuristic
+  misjudges your habits; when it is running it takes precedence.
 
 If both are unsatisfying, turn "Only After Cmd+Tab" off: TabMaximize then restores on any
 activation of an all-minimized app. Dock clicks already do this themselves, so the

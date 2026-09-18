@@ -1,4 +1,5 @@
 import AppKit
+import CoreGraphics
 import Foundation
 
 /// Watches for apps becoming frontmost and, when the switch looks like a Cmd+Tab to an
@@ -34,6 +35,43 @@ final class ActivationWatcher {
         let isRegular: Bool
     }
 
+    /// Evidence about *how* the switch was made, sampled at the instant of activation.
+    ///
+    /// Command is already released by the time the notification arrives — the switcher
+    /// commits on release — so asking whether it is held never works. What does survive
+    /// is timing: a Cmd+Tab leaves a keystroke a fraction of a second in the past, while
+    /// a Dock click leaves a mouse event as the most recent input. None of this needs a
+    /// TCC grant; `CGEventSource` reports input recency, not input content.
+    private struct InputEvidence: Sendable {
+        let commandHeld: Bool
+        let sinceKeyDown: CFTimeInterval
+        let sinceFlagsChanged: CFTimeInterval
+        let sinceMouseDown: CFTimeInterval
+
+        static func sample() -> InputEvidence {
+            func age(_ type: CGEventType) -> CFTimeInterval {
+                CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: type)
+            }
+            return InputEvidence(
+                commandHeld: NSEvent.modifierFlags.contains(.command),
+                sinceKeyDown: age(.keyDown),
+                sinceFlagsChanged: age(.flagsChanged),
+                sinceMouseDown: min(age(.leftMouseDown), age(.rightMouseDown))
+            )
+        }
+
+        /// The keyboard was the most recent thing the user touched, and recently enough
+        /// that this activation plausibly came from it.
+        var looksKeyboardDriven: Bool {
+            sinceKeyDown < 2.0 && sinceKeyDown < sinceMouseDown
+        }
+
+        var description: String {
+            String(format: "command held: %@, since keyDown: %.2fs, flagsChanged: %.2fs, mouseDown: %.2fs",
+                   commandHeld ? "true" : "false", sinceKeyDown, sinceFlagsChanged, sinceMouseDown)
+        }
+    }
+
     func start() {
         guard observer == nil else { return }
         observer = NSWorkspace.shared.notificationCenter.addObserver(
@@ -42,9 +80,9 @@ final class ActivationWatcher {
             queue: .main
         ) { note in
             guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
-            // Read the modifier state synchronously, before hopping actors — by the next
-            // run loop turn the user may well have let Command go.
-            let commandDown = NSEvent.modifierFlags.contains(.command)
+            // Sample input state synchronously, before hopping actors — these are
+            // "how long ago" readings and they age with every run loop turn.
+            let evidence = InputEvidence.sample()
             let info = AppInfo(
                 pid: app.processIdentifier,
                 bundleID: app.bundleIdentifier,
@@ -52,7 +90,7 @@ final class ActivationWatcher {
                 isRegular: app.activationPolicy == .regular
             )
             Task { @MainActor in
-                self.handle(info, commandDown: commandDown)
+                self.handle(info, evidence: evidence)
             }
         }
         Log.note(Log.activation, "watching application activations")
@@ -67,9 +105,9 @@ final class ActivationWatcher {
 
     // MARK: - Decision
 
-    private func handle(_ info: AppInfo, commandDown: Bool) {
+    private func handle(_ info: AppInfo, evidence: InputEvidence) {
         let tapAge = SwitcherMonitor.shared.secondsSinceActivity
-        Log.debug(Log.activation, "activated \(info.name) (pid \(info.pid)) — command held: \(commandDown), tap age: \(tapAge.map { String(format: "%.3fs", $0) } ?? "n/a")")
+        Log.debug(Log.activation, "activated \(info.name) (pid \(info.pid)) — \(evidence.description), tap: \(tapAge.map { String(format: "%.2fs", $0) } ?? "n/a")")
 
         guard Prefs.enabled else { return }
 
@@ -97,7 +135,7 @@ final class ActivationWatcher {
             return
         }
 
-        if Prefs.requireCmdTab, !cameFromSwitcher(commandDown: commandDown) {
+        if Prefs.requireCmdTab, !cameFromSwitcher(evidence: evidence) {
             Log.debug(Log.activation, "\(info.name): not a Cmd+Tab switch, ignoring")
             return
         }
@@ -142,9 +180,12 @@ final class ActivationWatcher {
         }
     }
 
-    private func cameFromSwitcher(commandDown: Bool) -> Bool {
-        if commandDown { return true }
+    /// Three tiers, cheapest first. The event tap is definitive but costs an Input
+    /// Monitoring grant, so it is only consulted when it has been switched on.
+    private func cameFromSwitcher(evidence: InputEvidence) -> Bool {
+        if evidence.commandHeld { return true }
         if let age = SwitcherMonitor.shared.secondsSinceActivity, age < Self.switcherWindow { return true }
+        if !SwitcherMonitor.shared.isRunning, evidence.looksKeyboardDriven { return true }
         return false
     }
 
